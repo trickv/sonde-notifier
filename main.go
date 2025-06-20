@@ -8,16 +8,27 @@ import (
 	"net/http"
 	"bytes"
 	"time"
+	"os"
+	"strconv"
 
 	"github.com/umahmood/haversine"
+	"github.com/joho/godotenv"
 )
 
 // ========== CONFIG ==========
+
+func loadConfig() error {
+	return godotenv.Load(".env")
+}
+
+var (
+	haURL     string
+	haToken   string
+	entityID  string
+	distanceKM float64
+)
+
 const (
-	haToken      = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIxZjQ1NDkxZjgyNjQ0MGY3YWVkZWI1OWQ1YTkxMGNhMyIsImlhdCI6MTc1MDM0MTY1OCwiZXhwIjoyMDY1NzAxNjU4fQ.zX-xUTLWq9iXGVUfbrL-xwhPC8I4-MbCgPvjsdWDNoo"
-	haURL        = "https://hass.vanstaveren.us"
-	entityID     = "person.patrick_van_staveren"
-	distanceKM   = 100
 	checkInterval = 10 * time.Minute
 )
 
@@ -49,6 +60,28 @@ type Sonde struct {
 }
 
 // ========== MAIN LOOP ==========
+
+func loadNotified() (map[string]bool, error) {
+	data, err := os.ReadFile("notified.json")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]bool), nil // file doesn't exist yet
+		}
+		return nil, err
+	}
+	var notified map[string]bool
+	err = json.Unmarshal(data, &notified)
+	return notified, err
+}
+
+func saveNotified(notified map[string]bool) error {
+	data, err := json.MarshalIndent(notified, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("notified.json", data, 0644)
+}
+
 
 func checkNearbySondes() error {
 	userLat, userLon, err := getUserLocation()
@@ -83,7 +116,13 @@ func checkNearbySondes() error {
 		return nil
 	}
 
+	notified, _ := loadNotified()
+
 	for id, sonde := range result {
+		if notified[id] {
+            fmt.Println("Already notified about sonde ", id)
+            continue // already notified
+        }
 		timestamp, err := time.Parse(time.RFC3339, sonde.Datetime)
 		if err != nil {
 			fmt.Printf("⚠️ Could not parse time for sonde %s: %v\n", id, err)
@@ -105,7 +144,10 @@ func checkNearbySondes() error {
 		err = notifyHA(msg, url)
 		if err != nil {
 			fmt.Printf("⚠️ Failed to notify for %s: %v\n", id, err)
+		} else {
+			notified[id] = true // mark as notified
 		}
+		saveNotified(notified)
 	}
 
 	return nil
@@ -187,6 +229,11 @@ func getUserLocation() (float64, float64, error) {
 
 
 func main() {
+	loadConfig()
+	haURL = os.Getenv("HA_URL")
+	haToken = os.Getenv("HA_TOKEN")
+	entityID = os.Getenv("HA_PERSON_ENTITY_ID")
+	distanceKM, _ = strconv.ParseFloat(os.Getenv("DISTANCE_KM"), 64)
 	for {
 		err := checkNearbySondes()
 		if err != nil {
