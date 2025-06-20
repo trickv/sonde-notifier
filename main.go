@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"time"
 
-	import "github.com/umahmood/haversine"
+	"github.com/umahmood/haversine"
 )
 
 // ========== CONFIG ==========
@@ -90,10 +90,14 @@ func checkNearbySondes() error {
 			continue
 		}
 		timeAgo := time.Since(timestamp).Round(time.Minute)
+		userCoord := haversine.Coord{Lat: userLat, Lon: userLon}
+		sondeCoord := haversine.Coord{Lat: sonde.Lat, Lon: sonde.Lon}
+
+		_, km := haversine.Distance(userCoord, sondeCoord) // distance in kilometers
 
 		msg := fmt.Sprintf(
-			"📡 Sonde %s landed at %.0f m about %s ago",
-			id, sonde.Alt, timeAgo,
+			"📡 Sonde %s at %.0f m about %s ago, %.1f km away",
+			id, sonde.Alt, timeAgo, km,
 		)
 		fmt.Println(msg)
 
