@@ -6,9 +6,10 @@ import (
 	"io/ioutil"
 	"io"
 	"net/http"
-	"strings"
+	"bytes"
 	"time"
 
+	import "github.com/umahmood/haversine"
 )
 
 // ========== CONFIG ==========
@@ -68,16 +69,10 @@ func checkNearbySondes() error {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// The returned JSON is a map of string keys to sonde data
-	var result map[string]struct {
-		Lat float64 `json:"lat"`
-		Lon float64 `json:"lon"`
-		Alt float64 `json:"alt"`
-	}
-
+	var result map[string]Sonde
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	if err != nil {
 		return fmt.Errorf("decoding Sondehub JSON: %w", err)
@@ -88,30 +83,66 @@ func checkNearbySondes() error {
 		return nil
 	}
 
-	// Optional: print info about each found sonde
-	for serial, sonde := range result {
-		fmt.Printf("📡 Sonde %s landed at %.5f, %.5f (alt %.1f m)\n", serial, sonde.Lat, sonde.Lon, sonde.Alt)
-	}
+	for id, sonde := range result {
+		timestamp, err := time.Parse(time.RFC3339, sonde.Datetime)
+		if err != nil {
+			fmt.Printf("⚠️ Could not parse time for sonde %s: %v\n", id, err)
+			continue
+		}
+		timeAgo := time.Since(timestamp).Round(time.Minute)
 
-	// Trigger HA notification
-	msg := fmt.Sprintf("⚠️ %d radiosonde(s) landed nearby!", len(result))
-	notifyHA(msg)
+		msg := fmt.Sprintf(
+			"📡 Sonde %s landed at %.0f m about %s ago",
+			id, sonde.Alt, timeAgo,
+		)
+		fmt.Println(msg)
+
+		url := fmt.Sprintf("https://sondehub.org/%s", id)
+		err = notifyHA(msg, url)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to notify for %s: %v\n", id, err)
+		}
+	}
 
 	return nil
 }
 
-func notifyHA(message string) {
-	url := haURL + "/api/services/notify/notify"
-	payload := fmt.Sprintf(`{"message": "%s"}`, message)
-	req, _ := http.NewRequest("POST", url, strings.NewReader(payload))
+func notifyHA(message, url string) error {
+	notificationURL := haURL + "/api/services/notify/notify"
+	payload := map[string]interface{}{
+		"message": message,
+		"data": map[string]string{
+			"url": url, // tap action opens sonde page
+		},
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", notificationURL, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Authorization", "Bearer "+haToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	_, err := http.DefaultClient.Do(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Failed to send notification:", err)
+		return err
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HA notify error: %s", body)
+	}
+
+	return nil
 }
+
 func getUserLocation() (float64, float64, error) {
 	url := fmt.Sprintf("%s/api/states/%s", haURL, entityID)
 	req, err := http.NewRequest("GET", url, nil)
@@ -156,10 +187,9 @@ func main() {
 		err := checkNearbySondes()
 		if err != nil {
 			fmt.Println("Error:", err)
-			notifyHA("Error checking sondes: " + err.Error())
-		} else {
-			fmt.Println("Nothing to see here")
-		}
+			notifyHA("Error checking sondes: " + err.Error(), "https://example.com")
+		} 
+		fmt.Println("Loop complete, sleeping...")
 		time.Sleep(checkInterval)
 	}
 }
