@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,14 @@ type SondeResponse struct {
 			Type string `json:"type"`
 		} `json:"frame"`
 	} `json:"sondes"`
+}
+
+type Sonde struct {
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	Alt      float64 `json:"alt"`
+	Serial   string  `json:"serial"`
+	Datetime string  `json:"datetime"`
 }
 
 // ========== MAIN LOOP ==========
