@@ -1,18 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"io/ioutil"
 	"io"
 	"net/http"
-	"bytes"
-	"time"
 	"os"
 	"strconv"
+	"time"
 
-	"github.com/umahmood/haversine"
 	"github.com/joho/godotenv"
+	"github.com/umahmood/haversine"
 )
 
 // ========== CONFIG ==========
@@ -22,10 +22,11 @@ func loadConfig() error {
 }
 
 var (
-	haURL     string
-	haToken   string
-	entityID  string
-	distanceKM float64
+	haURL        string
+	haToken      string
+	entityID     string
+	distanceKM   float64
+	notifiedFile string
 )
 
 const (
@@ -62,7 +63,7 @@ type Sonde struct {
 // ========== MAIN LOOP ==========
 
 func loadNotified() (map[string]bool, error) {
-	data, err := os.ReadFile("notified.json")
+	data, err := os.ReadFile(notifiedFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return make(map[string]bool), nil // file doesn't exist yet
@@ -79,7 +80,7 @@ func saveNotified(notified map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("notified.json", data, 0644)
+	return os.WriteFile(notifiedFile, data, 0644)
 }
 
 
@@ -140,8 +141,28 @@ func checkNearbySondes() error {
 		)
 		fmt.Println(msg)
 
-		url := fmt.Sprintf("https://sondehub.org/%s", id)
-		err = notifyHA(msg, url)
+		sondeURL := fmt.Sprintf("https://sondehub.org/%s", id)
+
+		// Fire event to Home Assistant for logging/dashboard
+		eventData := map[string]interface{}{
+			"sonde_id":    id,
+			"sonde_lat":   sonde.Lat,
+			"sonde_lon":   sonde.Lon,
+			"sonde_alt":   sonde.Alt,
+			"distance_km": km,
+			"user":        entityID,
+			"user_lat":    userLat,
+			"user_lon":    userLon,
+			"sonde_url":   sondeURL,
+			"landed_ago":  timeAgo.String(),
+			"message":     msg,
+		}
+		if err := fireEvent("sonde_alert", eventData); err != nil {
+			fmt.Printf("⚠️ Failed to fire event for %s: %v\n", id, err)
+		}
+
+		notifyMsg := fmt.Sprintf("%s\n%s", msg, sondeURL)
+		err = notifyHA("Sonde Alert", notifyMsg)
 		if err != nil {
 			fmt.Printf("⚠️ Failed to notify for %s: %v\n", id, err)
 		} else {
@@ -153,13 +174,40 @@ func checkNearbySondes() error {
 	return nil
 }
 
-func notifyHA(message, url string) error {
-	notificationURL := haURL + "/api/services/notify/notify"
+func fireEvent(eventType string, data map[string]interface{}) error {
+	eventURL := haURL + "/api/events/" + eventType
+	jsonPayload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", eventURL, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+haToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HA event error: %s", body)
+	}
+	return nil
+}
+
+func notifyHA(title, message string) error {
+	scriptURL := haURL + "/api/services/script/notify_a_person_on_all_devices"
 	payload := map[string]interface{}{
+		"person":  entityID,
+		"title":   title,
 		"message": message,
-		"data": map[string]string{
-			"url": url, // tap action opens sonde page
-		},
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -167,7 +215,7 @@ func notifyHA(message, url string) error {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", notificationURL, bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequest("POST", scriptURL, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return err
 	}
@@ -207,7 +255,7 @@ func getUserLocation() (float64, float64, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		return 0, 0, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -229,17 +277,35 @@ func getUserLocation() (float64, float64, error) {
 
 
 func main() {
+	// CLI args
+	personEntity := flag.String("person", "", "Home Assistant person entity ID (e.g., person.trick)")
+	notifiedFileFlag := flag.String("notified-file", "", "Path to notified.json file (e.g., notified_trick.json)")
+	flag.Parse()
+
+	if *personEntity == "" || *notifiedFileFlag == "" {
+		fmt.Println("Usage: sonde-alert -person <entity_id> -notified-file <path>")
+		fmt.Println("Example: sonde-alert -person person.trick -notified-file notified_trick.json")
+		os.Exit(1)
+	}
+
+	// Load shared config from .env (HA_URL, HA_TOKEN, DISTANCE_KM)
 	loadConfig()
 	haURL = os.Getenv("HA_URL")
 	haToken = os.Getenv("HA_TOKEN")
-	entityID = os.Getenv("HA_PERSON_ENTITY_ID")
 	distanceKM, _ = strconv.ParseFloat(os.Getenv("DISTANCE_KM"), 64)
+
+	// Set per-user config from CLI args
+	entityID = *personEntity
+	notifiedFile = *notifiedFileFlag
+
+	fmt.Printf("Starting sonde-alert for %s (file: %s)\n", entityID, notifiedFile)
+
 	for {
 		err := checkNearbySondes()
 		if err != nil {
 			fmt.Println("Error:", err)
-			notifyHA("Error checking sondes: " + err.Error(), "https://example.com")
-		} 
+			notifyHA("Sonde Alert Error", "Error checking sondes: "+err.Error())
+		}
 		fmt.Println("Loop complete, sleeping...")
 		time.Sleep(checkInterval)
 	}

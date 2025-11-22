@@ -1,0 +1,14 @@
+[Unit]
+Description=Sonde Alert for %i
+After=network.target
+
+[Service]
+Type=simple
+User=trick
+WorkingDirectory=/home/trick/src/github.com/trickv/sonde-alert
+ExecStart=/home/trick/src/github.com/trickv/sonde-alert/sonde-alert -person person.%i -notified-file notified_%i.json
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
