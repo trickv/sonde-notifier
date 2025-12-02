@@ -1,3 +1,4 @@
 .env
 notified.json
+notified*.json
 sonde-alert
