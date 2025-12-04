@@ -162,7 +162,7 @@ func checkNearbySondes() error {
 		}
 
 		notifyMsg := fmt.Sprintf("%s\n%s", msg, sondeURL)
-		err = notifyHA("Sonde Alert", notifyMsg)
+		err = notifyHA("Sonde Alert", notifyMsg, sondeURL)
 		if err != nil {
 			fmt.Printf("⚠️ Failed to notify for %s: %v\n", id, err)
 		} else {
@@ -202,12 +202,13 @@ func fireEvent(eventType string, data map[string]interface{}) error {
 	return nil
 }
 
-func notifyHA(title, message string) error {
+func notifyHA(title, message, url string) error {
 	scriptURL := haURL + "/api/services/script/notify_a_person_on_all_devices"
 	payload := map[string]interface{}{
 		"person":  entityID,
 		"title":   title,
 		"message": message,
+		"url":     url,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -304,7 +305,7 @@ func main() {
 		err := checkNearbySondes()
 		if err != nil {
 			fmt.Println("Error:", err)
-			notifyHA("Sonde Alert Error", "Error checking sondes: "+err.Error())
+			notifyHA("Sonde Alert Error", "Error checking sondes: "+err.Error(), "")
 		}
 		fmt.Println("Loop complete, sleeping...")
 		time.Sleep(checkInterval)
