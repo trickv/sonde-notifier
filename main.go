@@ -70,9 +70,14 @@ func loadNotified() (map[string]bool, error) {
 		}
 		return nil, err
 	}
-	var notified map[string]bool
-	err = json.Unmarshal(data, &notified)
-	return notified, err
+	if len(data) == 0 {
+		return make(map[string]bool), nil // empty file (e.g. prior truncated write)
+	}
+	notified := make(map[string]bool)
+	if err := json.Unmarshal(data, &notified); err != nil {
+		return nil, err
+	}
+	return notified, nil
 }
 
 func saveNotified(notified map[string]bool) error {
@@ -80,7 +85,11 @@ func saveNotified(notified map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(notifiedFile, data, 0644)
+	tmp := notifiedFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, notifiedFile)
 }
 
 
@@ -117,7 +126,10 @@ func checkNearbySondes() error {
 		return nil
 	}
 
-	notified, _ := loadNotified()
+	notified, err := loadNotified()
+	if err != nil {
+		return fmt.Errorf("loading notified file: %w", err)
+	}
 
 	for id, sonde := range result {
 		if notified[id] {
